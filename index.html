@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>חוזה עם החיים</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="CFL_style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site-head">
+      <img class="logo" src="CFL_logo.png" width="180" style="width:180px;max-width:50%;height:auto" alt="חוזה עם החיים · לפתוח · לבחור · לדייק">
+      <nav class="site-nav">
+        <button id="homeBtn" class="link-btn" type="button" hidden>חזרה לעמוד הראשי</button>
+        <button id="logoutBtn" class="link-btn" type="button" hidden>יציאה</button>
+      </nav>
+    </header>
+    <main id="app">
+      <p class="loading">טוען…</p>
+    </main>
+    <footer><b>חוזה עם החיים</b> · לפתוח · לבחור · לדייק</footer>
+  </div>
+  <script src="CFL_config.js"></script>
+  <script src="CFL_app.js"></script>
+  <!-- Google's sign-in script; calls onGsiLoad() when ready -->
+  <script src="https://accounts.google.com/gsi/client?hl=he" async defer onload="onGsiLoad()"></script>
+</body>
+</html>

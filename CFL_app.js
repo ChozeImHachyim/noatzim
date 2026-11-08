@@ -1,0 +1,715 @@
+// חוזה עם החיים (CFL) – צד לקוח
+
+// The server address is set in CFL_config.js
+const TOKEN_KEY = 'cfl_token';
+const EMAIL_KEY = 'cfl_email';
+
+const app = document.getElementById('app');
+const logoutBtn = document.getElementById('logoutBtn');
+const homeBtn = document.getElementById('homeBtn');
+let currentUser = null; // { name, email } after the home page loads
+
+// ===================== Browser storage =====================
+function store(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch (e) { /* private mode etc. – the site still works, it just won't remember */ }
+}
+function load(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+// ===================== Talking to the server =====================
+async function api(action, data) {
+  const body = Object.assign({ action: action, token: load(TOKEN_KEY) }, data || {});
+  let res;
+  try {
+    // text/plain keeps this a "simple" request, so the browser doesn't block the reply from Google
+    res = await fetch(CFL_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) {
+    return { ok: false, message: 'אין חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.' };
+  }
+  let out;
+  try { out = await res.json(); } catch (e) {
+    return { ok: false, message: 'תקלה בשרת. נסו שוב מאוחר יותר.' };
+  }
+  if (out.auth === false) {
+    // the saved login is no longer valid – back to the login screen
+    store(TOKEN_KEY, null);
+    showLogin({ message: out.message });
+    return { ok: false, handled: true };
+  }
+  return out;
+}
+
+// ===================== Building the page =====================
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') node.className = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) {
+    if (c === null || c === undefined || c === false) continue;
+    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return node;
+}
+
+function render(...nodes) {
+  app.replaceChildren(...nodes.filter(n => n !== null && n !== undefined));
+  app.dataset.view = ''; // which screen is showing (set by the home page, so a late refresh doesn't draw over another screen)
+  homeBtn.hidden = logoutBtn.hidden; // signed in: a way back home from any screen (the home page hides it again)
+  window.scrollTo(0, 0);
+}
+
+// ===================== Remembering the last answers from the server (makes the site feel fast) =====================
+// The home page is drawn at once from the last visit and refreshed in the background. Questionnaire pages are
+// loaded ahead while you're on the home page. Everything is tied to the current login.
+const HOME_CACHE = 'cfl_home';
+const TOOL_CACHE = 'cfl_tool_'; // + id, in this tab only (sessionStorage), read by CFL_bridge.js
+function cacheGet(key) {
+  try {
+    const o = JSON.parse(localStorage.getItem(key) || 'null');
+    return o && o.token === load(TOKEN_KEY) ? o.r : null;
+  } catch (e) { return null; }
+}
+function cachePut(key, r, session) {
+  try { (session ? sessionStorage : localStorage).setItem(key, JSON.stringify({ token: load(TOKEN_KEY), at: Date.now(), r: r })); } catch (e) { }
+}
+function clearToolCaches() {
+  try { Object.keys(sessionStorage).filter(k => k.indexOf(TOOL_CACHE) === 0).forEach(k => sessionStorage.removeItem(k)); } catch (e) { }
+}
+function clearCaches() {
+  store(HOME_CACHE, null);
+  clearToolCaches();
+}
+// Everything the questionnaires need (answers, שיקופים, drafts) is loaded once, right after the list. Until it is
+// in, their buttons wait ("טוען…"); then every click opens at once. Kept 10 minutes in this tab.
+let toolsLoad = 'idle'; // 'idle' (not asked yet) | 'loading' | 'done' | 'failed' (then the pages load their own data)
+function toolLoaded(id) {
+  try {
+    const o = JSON.parse(sessionStorage.getItem(TOOL_CACHE + id) || 'null');
+    if (o && o.token === load(TOKEN_KEY) && Date.now() - o.at < 10 * 60000 && o.r && o.r.ok) return o.r;
+  } catch (e) { }
+  return null;
+}
+async function prefetchTools(r) {
+  if (r.privacyNeeded) return; // nothing opens before the approval
+  const ids = r.questionnaires.filter(q => q.type === 'tool').map(q => q.id);
+  // a questionnaire no longer on the list (closed by a יועץ before it was sent): its saved copy goes
+  try { Object.keys(sessionStorage).filter(k => k.indexOf(TOOL_CACHE) === 0 && ids.indexOf(k.slice(TOOL_CACHE.length)) === -1).forEach(k => sessionStorage.removeItem(k)); } catch (e) { }
+  if (!ids.length) { toolsLoad = 'done'; return; }
+  toolsLoad = 'loading'; paintActions();
+  const x = await api('tools', { ids: ids });
+  if (x.ok) { ids.forEach(id => { if (x.tools[id] && x.tools[id].ok) cachePut(TOOL_CACHE + id, x.tools[id], true); }); toolsLoad = 'done'; }
+  else toolsLoad = 'failed'; // the pages load their own data then
+  paintActions();
+}
+
+function msgBox(text, kind) {
+  return el('div', { class: 'msg ' + (kind || 'error'), role: 'alert' }, text);
+}
+
+function field(label, input) {
+  return el('label', { class: 'field' }, el('span', {}, label), input);
+}
+
+function linkBtn(text, onclick) {
+  return el('button', { type: 'button', class: 'link-btn', onclick: onclick }, text);
+}
+
+// The logo's pen signing its circles: shown while the site waits (the same drawing is in CFL_bridge.js)
+const PEN_SVG = '<svg class="cfl-pen" viewBox="0 0 100 100" width="96" height="96" role="img" aria-label="רגע…" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="cflPenG" x1="0" y1="0" x2="1" y2="0.3"><stop offset="0" stop-color="#5E6A41"/><stop offset="0.65" stop-color="#9C9467"/><stop offset="1" stop-color="#E3D6B4"/></linearGradient></defs><style>.cfl-pen .r{fill:none;stroke:url(#cflPenG);stroke-linecap:round;stroke-dasharray:0 100;opacity:0;animation:cflPenR 3.6s ease-in-out infinite}.cfl-pen .r1{stroke-width:6.5}.cfl-pen .r2{stroke-width:5.5;animation-name:cflPenR2}.cfl-pen .r3{stroke-width:4.5;animation-name:cflPenR3}.cfl-pen .s{fill:none;stroke:#7A5236;stroke-width:1.4;stroke-linecap:round;stroke-dasharray:0 100;opacity:0;animation:cflPenS 3.6s linear infinite}.cfl-pen .p{opacity:0;animation:cflPenP 3.6s linear infinite}@keyframes cflPenR{0%{opacity:1;stroke-dasharray:0 100}24%{stroke-dasharray:75 100}86%{opacity:1;stroke-dasharray:75 100}100%{opacity:0;stroke-dasharray:75 100}}@keyframes cflPenR2{0%,9%{opacity:0;stroke-dasharray:0 100}10%{opacity:1}33%{stroke-dasharray:75 100}86%{opacity:1;stroke-dasharray:75 100}100%{opacity:0;stroke-dasharray:75 100}}@keyframes cflPenR3{0%,19%{opacity:0;stroke-dasharray:0 100}20%{opacity:1}42%{stroke-dasharray:75 100}86%{opacity:1;stroke-dasharray:75 100}100%{opacity:0;stroke-dasharray:75 100}}@keyframes cflPenS{0%,39%{opacity:0;stroke-dasharray:0 100}40%{opacity:1}72%{stroke-dasharray:100 100}86%{opacity:1;stroke-dasharray:100 100}100%{opacity:0;stroke-dasharray:100 100}}@keyframes cflPenP{0%,33%{opacity:0}40%{opacity:1}86%{opacity:1}100%{opacity:0}}@media (prefers-reduced-motion:reduce){.cfl-pen .r,.cfl-pen .s,.cfl-pen .p{animation:none;opacity:1;stroke-dasharray:75 100}.cfl-pen .s{stroke-dasharray:100 100}}</style><circle class="r r1" cx="50" cy="50" r="43" pathLength="100" transform="rotate(35 50 50)"/><circle class="r r2" cx="51.5" cy="52" r="32" pathLength="100" transform="rotate(35 51.5 52)"/><circle class="r r3" cx="53" cy="54" r="21" pathLength="100" transform="rotate(35 53 54)"/><path class="s" pathLength="100" d="M41 69 c2.5 -3 4.5 1.5 7 -1 s4.5 -4.5 7 -1.5 s4.5 3 8 -2.5"/><g class="p"><g transform="rotate(45) scale(1.35)"><path d="M-1.6 -6.5 L0 0 L1.6 -6.5 Z" fill="#7A5236"/><rect x="-2.1" y="-24" width="4.2" height="17" rx="2" fill="none" stroke="#7A5236" stroke-width="1.2"/><line x1="-2.1" y1="-10" x2="2.1" y2="-10" stroke="#7A5236" stroke-width="1"/></g><animateMotion dur="3.6s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1" keyTimes="0;0.4;0.72;1" path="M41 69 c2.5 -3 4.5 1.5 7 -1 s4.5 -4.5 7 -1.5 s4.5 3 8 -2.5"/></g></svg>';
+function penNode(size) {
+  const t = document.createElement('template'); t.innerHTML = PEN_SVG;
+  const svg = t.content.firstChild;
+  if (size) { svg.setAttribute('width', size); svg.setAttribute('height', size); }
+  return svg;
+}
+function loadingView() {
+  render(el('div', { class: 'loading' }, penNode(), el('p', {}, 'טוען…')));
+}
+
+function errorView(message, retry) {
+  render(el('div', { class: 'card' }, msgBox(message),
+    el('button', { type: 'button', class: 'btn secondary', onclick: retry }, 'נסו שוב')));
+}
+
+async function withBusy(btn, fn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'רגע…';
+  try { return await fn(); } finally { btn.disabled = false; btn.textContent = label; }
+}
+
+// ===================== Login: with Google only =====================
+// Only an email a יועץ opened a תיק for can sign in (there is no self sign-up).
+let gsiReady = false;
+function onGsiLoad() { gsiReady = true; const box = document.getElementById('gbtn'); if (box && !box.querySelector('iframe, div[role=button]')) drawGoogleButton(box); }
+window.onGsiLoad = onGsiLoad;
+
+function showLogin(opts) {
+  opts = opts || {};
+  currentUser = null;
+  logoutBtn.hidden = true;
+  homeBtn.hidden = true;
+  const msg = el('div', { id: 'loginMsg' });
+  if (opts.message) msg.append(msgBox(opts.message));
+  const box = el('div', { id: 'gbtn', class: 'gbtn' });
+  render(el('div', { class: 'card auth-card' },
+    el('h1', {}, 'כניסה'),
+    el('p', { class: 'sub' }, 'הכניסה לאתר היא עם חשבון Google, עם אותה כתובת מייל שמסרת ליועץ/ת.'),
+    msg, box,
+    el('p', { class: 'hint small' }, 'אין לך עדיין חשבון באתר? החשבון נפתח על ידי היועץ/ת שלך. לשאלות: ',
+      el('a', { href: 'mailto:chozeimhachyim@gmail.com', dir: 'ltr' }, 'chozeimhachyim@gmail.com'))));
+  drawGoogleButton(box);
+}
+
+function drawGoogleButton(box) {
+  if (!gsiReady || !window.google || !google.accounts || !google.accounts.id) {
+    box.replaceChildren(el('p', { class: 'muted' }, 'טוען את הכניסה של Google…'));
+    return; // onGsiLoad draws it once Google's script has loaded
+  }
+  box.replaceChildren();
+  google.accounts.id.initialize({ client_id: CFL_GOOGLE_CLIENT_ID, callback: onCredential, ux_mode: 'popup', auto_select: false, cancel_on_tap_outside: true });
+  google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', locale: 'he', width: 280 });
+}
+
+async function onCredential(resp) {
+  const box = document.getElementById('gbtn');
+  const msg = document.getElementById('loginMsg');
+  if (msg) msg.replaceChildren();
+  if (box) box.replaceChildren(el('p', { class: 'muted' }, 'בודקים את הכניסה…'));
+  const r = await api('googleLogin', { idToken: resp && resp.credential });
+  if (!r.ok) {
+    if (!r.handled) { if (msg) msg.append(msgBox(r.message)); if (box) drawGoogleButton(box); }
+    try { google.accounts.id.disableAutoSelect(); } catch (e) { }
+    return;
+  }
+  store(TOKEN_KEY, r.token);
+  store(EMAIL_KEY, r.email);
+  showHome();
+}
+
+// Two radio buttons: בלשון נקבה / בלשון זכר (asked once, if the יועץ did not set it)
+function genderPicker() {
+  const opt = (value, label) => el('label', { class: 'option' },
+    el('input', { type: 'radio', name: 'gender', value: value }), el('span', {}, label));
+  const box = el('div', { class: 'options two', role: 'radiogroup' }, opt('f', 'בלשון נקבה'), opt('m', 'בלשון זכר'));
+  return { box, value: () => { const c = box.querySelector('input:checked'); return c ? c.value : ''; } };
+}
+
+async function logout() {
+  clearCaches();
+  await api('logout');
+  store(TOKEN_KEY, null);
+  store(EMAIL_KEY, null);
+  try { google.accounts.id.disableAutoSelect(); } catch (e) { }
+  showLogin();
+}
+logoutBtn.addEventListener('click', logout);
+homeBtn.addEventListener('click', () => showHome());
+
+// ===================== Home page =====================
+function draftKey(id) {
+  return 'cfl_draft_' + (currentUser ? currentUser.email : '') + '_' + id;
+}
+
+let homeSeq = 0;
+async function showHome(notice) {
+  const seq = ++homeSeq;
+  const cached = cacheGet(HOME_CACHE);
+  if (cached) drawHome(cached, notice);
+  else { loadingView(); app.dataset.view = 'home'; homeBtn.hidden = true; }
+  const r = await api('home');
+  if (seq !== homeSeq || app.dataset.view !== 'home') return; // another screen was opened meanwhile
+  if (!r.ok) { if (!r.handled && !cached) errorView(r.message, () => showHome()); return; }
+  cachePut(HOME_CACHE, r);
+  prefetchTools(r);
+  if (cached && JSON.stringify(cached) === JSON.stringify(r)) return; // nothing changed
+  if (app.querySelector('button:disabled:not(.q-go)')) return; // an upload is running; keep the screen as it is (not the questionnaire buttons waiting for their data)
+  drawHome(r, notice, !!cached);
+}
+
+function drawHome(r, notice, keepScroll) {
+  const y = window.scrollY;
+  currentUser = { name: r.name, email: r.email };
+  store(EMAIL_KEY, r.email); // questionnaire pages use it to keep each user's draft separate
+  logoutBtn.hidden = false;
+
+  // The privacy policy is approved once (and again if it changes) before anything else
+  if (r.privacyNeeded) { showPrivacyApproval(r); app.dataset.view = 'home'; homeBtn.hidden = true; return; }
+  // Signed up before 'לשון פניה' existed: ask once, then every questionnaire uses it
+  if (!r.gender) { showGenderQuestion(r.name); app.dataset.view = 'home'; homeBtn.hidden = true; return; }
+
+  const cards = r.questionnaires.map(q => {
+    let badge;
+    if (q.status === 'submitted' && q.readOnly) badge = el('span', { class: 'badge submitted' }, 'נשלח · לצפייה בלבד');
+    else if (q.status === 'submitted') badge = el('span', { class: 'badge submitted' }, 'נשלח');
+    else if (q.status === 'open') badge = el('span', { class: 'badge open' }, 'פתוח למילוי');
+    else badge = el('span', { class: 'badge locked' }, 'ייפתח בהמשך');
+    const action = qAction(q);
+    return el('div', { class: 'q-card ' + q.status + (q.readOnly ? ' readonly' : ''), 'data-q': q.id },
+      el('div', { class: 'q-text' }, el('div', { class: 'q-title' }, el('h3', {}, q.title), badge),
+        q.description ? el('p', {}, q.description) : null),
+      action ? el('div', { class: 'actions' }, action) : null);
+  });
+
+  render(
+    notice ? msgBox(notice, 'success') : null,
+    el('h1', {}, 'שלום, ' + r.name),
+    tasksSection(r.tasks),
+    cvCard(r.cv),
+    feedbackCard(r.feedback),
+    el('h2', { class: 'section-title' }, 'השאלונים שלך'),
+    cards.length ? el('div', { class: 'q-list' }, cards)
+      : el('p', { class: 'muted' }, 'עדיין אין שאלונים פתוחים. שאלונים חדשים ייפתחו לאורך התהליך.'),
+    cards.length ? el('p', { class: 'muted small' }, 'שאלונים נוספים ייפתחו לאורך התהליך.') : null
+  );
+  app.dataset.view = 'home';
+  homeBtn.hidden = true; // already home
+  if (keepScroll) window.scrollTo(0, y);
+}
+
+// A questionnaire's button. Questionnaires with their own page wait until their data is in ("טוען…").
+//  - sent and closed: "צפייה" opens the שיקוף screen, which has a button to the answers
+//  - sent and opened again by a יועץ: the page, to change and send again
+//  - open: the page ("המשך מילוי" when there is a draft, here or on the server)
+function qAction(q) {
+  const isTool = q.type === 'tool';
+  if (q.status !== 'open' && q.status !== 'submitted') return null;
+  const t = isTool ? toolLoaded(q.id) : null;
+  const wait = isTool && !t && toolsLoad !== 'done' && toolsLoad !== 'failed';
+  const btn = (label, primary, go) => el('button', { type: 'button', class: 'btn ' + (primary ? 'primary' : 'secondary') + ' small q-go',
+    disabled: wait, 'aria-busy': wait ? 'true' : null, onclick: go }, wait ? 'טוען…' : label);
+  if (q.status === 'submitted' && q.readOnly) return btn('צפייה', false, () => isTool ? showReflection(q) : showAnswers(q.id));
+  if (q.status === 'submitted') return btn('צפייה בתשובות', false, () => isTool ? openPage(q.page) : showAnswers(q.id));
+  const hasDraft = !!load(draftKey(q.id)) || !!(t && t.draft && t.draft.data);
+  return btn(hasDraft ? 'המשך מילוי' : 'למילוי', true, () => isTool ? openPage(q.page) : showQuestionnaire(q.id));
+}
+// the buttons again, in place (the rest of the home page stays as it is)
+function paintActions() {
+  const r = cacheGet(HOME_CACHE);
+  if (!r || app.dataset.view !== 'home') return;
+  r.questionnaires.forEach(q => {
+    const box = app.querySelector('.q-card[data-q="' + q.id + '"] .actions');
+    const a = qAction(q);
+    if (box && a) box.replaceChildren(a);
+  });
+}
+
+// ===================== The שיקוף of a questionnaire that was sent =====================
+// "צפייה" on a questionnaire that was sent and closed: the personal response (שיקוף) first, at once (it came with
+// everything else), and a button to the answers themselves (the questionnaire's page, read-only).
+function responseBody(text) {
+  const box = el('div', { class: 'refl-body' });
+  String(text || '').replace(/\r/g, '').split(/\n\s*\n/).forEach(block => {
+    const lines = block.split('\n').map(x => x.trim()).filter(Boolean);
+    let ul = null;
+    lines.forEach(line => {
+      const m = line.match(/^[•\-*]\s*(.+)$/);
+      if (m) { if (!ul) { ul = el('ul'); box.append(ul); } ul.append(el('li', {}, m[1])); }
+      else { ul = null; box.append(el('p', {}, line)); }
+    });
+  });
+  return box;
+}
+async function showReflection(q, again) {
+  let t = toolLoaded(q.id);
+  if (!t) { // not loaded ahead (or older than 10 minutes): load it now
+    loadingView(); app.dataset.view = 'reflection'; homeBtn.hidden = false;
+    t = await api('getTool', { id: q.id });
+    if (!t.ok) { if (!t.handled) errorView(t.message, () => showHome()); return; }
+    cachePut(TOOL_CACHE + q.id, t, true);
+  }
+  const toAnswers = el('button', { type: 'button', class: 'btn primary', id: 'toAnswers', onclick: () => openPage(q.page + (t.legacy ? '' : '#answers')) }, t.legacy ? 'לתשובות שנשלחו' : 'לתשובות שלי');
+  let card;
+  if (t.legacy) card = el('div', { class: 'card refl-card' }, el('p', { class: 'muted' }, 'השאלון הזה מולא במערכת הקודמת, ולכן אין לו שיקוף אישי. אפשר לקרוא את מה שנשלח.'));
+  else if (t.response) card = el('div', { class: 'card refl-card' }, el('h2', {}, 'השיקוף האישי שלך'), responseBody(t.response),
+    t.responseAt ? el('p', { class: 'muted small refl-at' }, 'נכתב ' + fmtDay(t.responseAt)) : null);
+  else card = el('div', { class: 'card refl-card' }, el('h2', {}, 'השיקוף האישי שלך'),
+    again ? el('p', { class: 'muted' }, 'השיקוף האישי עוד לא מוכן. אפשר לחזור לכאן בעוד כמה דקות.')
+      : el('div', { class: 'refl-writing' }, penNode(80), el('p', { class: 'muted' }, 'השיקוף האישי עוד לא היה מוכן. כותבים אותו עכשיו… זה לוקח בערך חצי דקה.')));
+  render(
+    el('div', { class: 'back' }, linkBtn('→ חזרה לעמוד הראשי', () => showHome())),
+    el('h1', {}, q.title),
+    t.submittedAt ? el('p', { class: 'sub' }, 'נשלח ב-' + fmtDay(t.submittedAt)) : null,
+    card,
+    el('div', { class: 'row refl-go' }, toAnswers));
+  app.dataset.view = 'reflection';
+  homeBtn.hidden = false;
+  // no שיקוף yet (its writing failed at the sending): the server tries again now, once
+  if (!t.legacy && !t.response && !again) {
+    const x = await api('getTool', { id: q.id });
+    if (app.dataset.view !== 'reflection') return;
+    if (x.ok) cachePut(TOOL_CACHE + q.id, x, true);
+    showReflection(q, true);
+  }
+}
+
+// ===================== Feedback from the יועצים =====================
+// Each feedback a יועץ sent by mail is kept here too, to reread any time.
+const fmtDay = at => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(at || '')); return m ? (+m[3]) + '.' + (+m[2]) + '.' + m[1] : String(at || ''); };
+function feedbackCard(list) {
+  if (!list || !list.length) return null;
+  return el('div', { class: 'card fb-card' },
+    el('h2', { class: 'fb-title' }, list.length > 1 ? 'משובים מהיועצים' : 'משוב מהיועצים'),
+    el('div', { class: 'fb-list' }, list.map((f, i) => el('button', { type: 'button', class: 'fb-item', onclick: () => showFeedback(f.id) },
+      el('span', {}, (i === 0 ? 'המשוב האחרון' : 'משוב') + ' · ' + fmtDay(f.at)), el('span', { class: 'fb-open' }, 'לקריאה ←')))));
+}
+// the text as written: "## " lines are headings, **x** is bold, blank lines split paragraphs (no HTML from the text)
+function feedbackBody(text) {
+  return el('div', { class: 'fb-body' }, String(text).replace(/\r/g, '').split(/\n{2,}/).map(b => {
+    const lines = b.split('\n');
+    const inline = s => s.split(/\*\*(.+?)\*\*/g).map((part, k) => k % 2 ? el('b', {}, part) : part);
+    if (/^#{1,3} /.test(lines[0])) return el('div', {}, el('h3', {}, lines[0].replace(/^#{1,3} /, '')), lines.length > 1 ? el('p', {}, ...lines.slice(1).flatMap((l, k) => k ? [el('br'), ...inline(l)] : inline(l))) : null);
+    return el('p', {}, ...lines.flatMap((l, k) => k ? [el('br'), ...inline(l)] : inline(l)));
+  }));
+}
+async function showFeedback(id) {
+  loadingView();
+  app.dataset.view = 'feedback';
+  homeBtn.hidden = false;
+  const r = await api('myFeedback');
+  if (!r.ok) { if (!r.handled) errorView(r.message, () => showHome()); return; }
+  const f = (r.feedback || []).filter(x => x.id === id)[0] || (r.feedback || [])[0];
+  if (!f) { errorView('המשוב לא נמצא.', () => showHome()); return; }
+  render(
+    el('div', { class: 'back' }, linkBtn('→ חזרה לעמוד הראשי', () => showHome())),
+    el('h1', {}, 'משוב'),
+    el('p', { class: 'sub' }, 'נשלח ב-' + fmtDay(f.at)),
+    el('div', { class: 'card' }, feedbackBody(f.text))
+  );
+  window.scrollTo(0, 0);
+}
+
+// ===================== CV (קורות חיים) =====================
+const CV_MAX = 5 * 1024 * 1024;
+const CV_EXT = ['pdf', 'doc', 'docx'];
+
+function readBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+
+function cvCard(cv) {
+  const status = el('p', { class: 'cv-status' });
+  const NOTE = 'PDF או Word, עד 5MB. נשמר באופן פרטי, ורק היועצים יכולים לצפות בו.';
+  const msg = el('div');
+  const paint = (c) => {
+    status.replaceChildren(c
+      ? el('span', {}, 'הקובץ שהועלה: ', el('bdi', {}, el('b', {}, c.name)), ' · ' + c.uploadedAt)
+      : NOTE);
+    btn.textContent = c ? 'החלפת הקובץ' : 'העלאת קורות חיים';
+  };
+  const input = el('input', {
+    type: 'file', class: 'cv-input', 'aria-label': 'בחירת קובץ קורות חיים',
+    accept: '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+  const btn = el('button', { type: 'button', class: 'btn primary small', onclick: () => input.click() });
+  input.addEventListener('change', async () => {
+    const f = input.files && input.files[0];
+    input.value = '';
+    if (!f) return;
+    msg.replaceChildren();
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (CV_EXT.indexOf(ext) === -1) { msg.append(msgBox('אפשר להעלות קובץ PDF או Word בלבד.')); return; }
+    if (f.size > CV_MAX) { msg.append(msgBox('הקובץ גדול מ-5MB. נסו לשמור אותו כ-PDF קטן יותר.')); return; }
+    let r;
+    await withBusy(btn, async () => {
+      btn.textContent = 'מעלה…';
+      let data;
+      try { data = await readBase64(f); } catch (e) { r = { ok: false, message: 'לא הצלחנו לקרוא את הקובץ.' }; return; }
+      r = await api('cvUpload', { name: f.name, data: data });
+    });
+    if (!r || !r.ok) { if (r && !r.handled) msg.append(msgBox(r.message)); return; }
+    paint(r.cv);
+    msg.append(msgBox('הקובץ נשמר. תודה!', 'success'));
+  });
+  paint(cv);
+  return el('div', { class: 'card cv-card' },
+    el('div', { class: 'cv-row' },
+      el('div', { class: 'q-text' }, el('h3', {}, 'קורות חיים'), status),
+      el('div', { class: 'actions' }, btn)),
+    msg, input);
+}
+
+// ===================== Tasks from the יועץ =====================
+// What to do until the next meeting; a task with "תיבת מענה" takes a Word file (a new upload replaces it).
+const TASK_EXT = ['docx', 'doc'];
+function tasksSection(t) {
+  if (!t || (!t.open.length && !t.past.length)) return null;
+  const row = k => {
+    const msg = el('div');
+    const status = el('p', { class: 'task-status small' });
+    const paint = a => status.replaceChildren(a ? el('span', {}, 'הקובץ שהועלה: ', el('bdi', {}, el('b', {}, a.name)), ' · ' + fmtDay(a.at))
+      : 'קובץ Word, עד 5MB. נשמר באופן פרטי, ורק היועצים יכולים לצפות בו.');
+    let btn = null;
+    if (k.box) {
+      const input = el('input', { type: 'file', class: 'cv-input', 'aria-label': 'בחירת קובץ Word לתשובה',
+        accept: '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      btn = el('button', { type: 'button', class: 'btn ' + (k.answer ? 'secondary' : 'primary') + ' small task-upload', onclick: () => input.click() },
+        k.answer ? 'החלפת הקובץ' : 'העלאת תשובה');
+      input.addEventListener('change', async () => {
+        const f = input.files && input.files[0];
+        input.value = '';
+        if (!f) return;
+        msg.replaceChildren();
+        const ext = (f.name.split('.').pop() || '').toLowerCase();
+        if (TASK_EXT.indexOf(ext) === -1) { msg.append(msgBox('אפשר להעלות קובץ Word בלבד (docx או doc).')); return; }
+        if (f.size > CV_MAX) { msg.append(msgBox('הקובץ גדול מ-5MB.')); return; }
+        let r;
+        await withBusy(btn, async () => {
+          btn.textContent = 'מעלה…';
+          let data;
+          try { data = await readBase64(f); } catch (e) { r = { ok: false, message: 'לא הצלחנו לקרוא את הקובץ.' }; return; }
+          r = await api('taskUpload', { id: k.id, name: f.name, data: data });
+        });
+        if (!r || !r.ok) { if (r && !r.handled) msg.append(msgBox(r.message)); btn.textContent = k.answer ? 'החלפת הקובץ' : 'העלאת תשובה'; return; }
+        const nk = r.tasks.open.concat(r.tasks.past).filter(x => x.id === k.id)[0];
+        k.answer = nk && nk.answer; paint(k.answer);
+        btn.textContent = 'החלפת הקובץ'; btn.className = 'btn secondary small task-upload';
+        msg.append(msgBox('הקובץ נשמר. תודה!', 'success'));
+      });
+      paint(k.answer);
+      return el('div', { class: 'task' + (k.answer ? ' answered' : '') }, el('div', { class: 'cv-row' },
+        el('div', { class: 'q-text' }, el('p', { class: 'task-text' }, k.text), status), el('div', { class: 'actions' }, btn)), msg, input);
+    }
+    return el('div', { class: 'task' }, el('p', { class: 'task-text' }, k.text));
+  };
+  return el('div', { class: 'card tasks-card' },
+    el('h3', {}, 'המשימות שלך עד הפגישה הבאה'),
+    t.open.length ? el('div', { class: 'tasks' }, t.open.map(row)) : el('p', { class: 'muted small' }, 'אין כרגע משימות פתוחות.'),
+    t.past.length ? el('details', { class: 'tasks-past' }, el('summary', {}, 'משימות קודמות (' + t.past.length + ')'),
+      el('div', { class: 'tasks' }, t.past.map(row))) : null);
+}
+
+// A questionnaire with its own page (like עוגני קריירה)
+function openPage(page) {
+  location.href = page;
+}
+
+function showPrivacyApproval(r) {
+  const w = (f, m, x) => r.gender === 'f' ? f : r.gender === 'm' ? m : x;
+  const msg = el('div');
+  const box = el('input', { type: 'checkbox', id: 'pv_ok' });
+  const btn = el('button', { type: 'submit', class: 'btn primary', disabled: true }, 'אישור והמשך');
+  box.addEventListener('change', () => { btn.disabled = !box.checked; });
+  render(
+    el('h1', {}, 'שלום, ' + r.name),
+    el('form', {
+      class: 'card privacy-approval',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        msg.replaceChildren();
+        if (!box.checked) { msg.append(msgBox('יש לסמן את תיבת האישור')); return; }
+        await withBusy(btn, async () => {
+          const res = await api('acceptPrivacy', { agree: true });
+          if (!res.ok) { if (!res.handled) msg.append(msgBox(res.message)); return; }
+          store(HOME_CACHE, null);
+          showHome();
+        });
+      }
+    },
+      el('h2', {}, 'לפני שמתחילים: פרטיות'),
+      el('p', {}, 'כדי ללוות ' + w('אותך', 'אותך', 'אותך') + ' בתהליך, נשמור את מה ש' + w('תכתבי', 'תכתוב', 'תכתבו') + ' באתר. בקצרה:'),
+      el('ul', { class: 'privacy-points' },
+        el('li', {}, 'התשובות לשאלונים, וקורות החיים אם ' + w('תעלי', 'תעלה', 'תעלו') + ' אותם, נשמרים ב-Google Sheets וב-Google Drive של מפעילי האתר.'),
+        el('li', {}, 'רק היועצים שבמערכת יכולים לראות אותם. המידע לא נמכר, ולא מועבר לאף אחד מלבד ספקי השירות שמפעילים את האתר.'),
+        el('li', {}, 'בסוף כל שאלון, התשובות נשלחות ל-Claude (בינה מלאכותית של Anthropic), שכותב לך שיקוף אישי. גם היועצים נעזרים ב-Claude כדי להתכונן לפגישות. ההחלטות נשארות אצלם.'),
+        el('li', {}, 'המייל משמש לקוד הכניסה, להודעות על שאלונים חדשים ולתזכורות, ולמשוב מהיועצים. בלי פרסום.'),
+        el('li', {}, 'אפשר לבקש בכל זמן לעיין במידע, לתקן או למחוק אותו: chozeimhachyim@gmail.com.')),
+      el('p', {}, el('a', { href: 'CFL_privacy.html', target: '_blank', rel: 'noopener' }, 'למדיניות הפרטיות המלאה')),
+      el('label', { class: 'check privacy-check', for: 'pv_ok' }, box,
+        ' ' + w('קראתי את מדיניות הפרטיות, ואני מסכימה', 'קראתי את מדיניות הפרטיות, ואני מסכים', 'קראתי את מדיניות הפרטיות, ואני מסכים/ה') + ' שהמידע שלי יישמר וישמש את היועצים בתהליך.'),
+      msg, el('div', { style: 'margin-top:16px' }, btn))
+  );
+}
+
+function showGenderQuestion(name) {
+  const msg = el('div');
+  const gender = genderPicker();
+  const btn = el('button', { type: 'submit', class: 'btn primary' }, 'המשך');
+  render(
+    el('h1', {}, 'שלום, ' + name),
+    el('form', {
+      class: 'card',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        msg.replaceChildren();
+        if (!gender.value()) { msg.append(msgBox('יש לבחור אחת מהאפשרויות')); return; }
+        await withBusy(btn, async () => {
+          const r = await api('setGender', { gender: gender.value() });
+          if (!r.ok) { if (!r.handled) msg.append(msgBox(r.message)); return; }
+          store(HOME_CACHE, null); // the saved home page is from before the choice
+          showHome();
+        });
+      }
+    },
+      el('h2', {}, 'לפני שמתחילים: איך נוח לך שנפנה אלייך?'),
+      el('p', { class: 'sub' }, 'כל השאלונים ינוסחו בהתאם.'),
+      msg, gender.box, el('div', { style: 'margin-top:16px' }, btn))
+  );
+}
+
+// ===================== Filling a questionnaire =====================
+function renderQuestion(item, value, index) {
+  const name = 'q_' + item.id;
+  const wrap = el('fieldset', { class: 'question', 'data-qid': item.id });
+  wrap.append(el('legend', {}, (index + 1) + '. ' + item.label,
+    item.required ? el('span', { class: 'req', title: 'שאלת חובה' }, ' *') : null));
+  if (item.help) wrap.append(el('p', { class: 'help' }, item.help));
+
+  if (item.type === 'text') {
+    wrap.append(el('input', { type: 'text', name: name, maxlength: '500', value: value || '' }));
+  } else if (item.type === 'textarea') {
+    const t = el('textarea', { name: name, rows: '4', maxlength: '5000' });
+    t.value = value || '';
+    wrap.append(t);
+  } else if (item.type === 'radio' || item.type === 'yesno') {
+    const opts = item.type === 'yesno' ? ['כן', 'לא'] : item.options;
+    wrap.append(el('div', { class: 'options' }, opts.map(o =>
+      el('label', { class: 'option' },
+        el('input', { type: 'radio', name: name, value: o, checked: value === o }),
+        el('span', {}, o)))));
+  } else if (item.type === 'checkbox') {
+    const chosen = Array.isArray(value) ? value : [];
+    wrap.append(el('div', { class: 'options' }, item.options.map(o =>
+      el('label', { class: 'option' },
+        el('input', { type: 'checkbox', name: name, value: o, checked: chosen.includes(o) }),
+        el('span', {}, o)))));
+  } else if (item.type === 'scale') {
+    const nums = [];
+    for (let n = item.min; n <= item.max; n++) nums.push(n);
+    wrap.append(el('div', { class: 'scale' },
+      item.minLabel ? el('span', { class: 'scale-end' }, item.minLabel) : null,
+      el('div', { class: 'scale-nums' }, nums.map(n =>
+        el('label', { class: 'scale-opt' },
+          el('input', { type: 'radio', name: name, value: String(n), checked: String(value) === String(n), 'aria-label': String(n) }),
+          el('span', {}, String(n))))),
+      item.maxLabel ? el('span', { class: 'scale-end' }, item.maxLabel) : null));
+  }
+  wrap.append(el('p', { class: 'q-error' }));
+  return wrap;
+}
+
+function collectAnswers(form, questions) {
+  const answers = {};
+  for (const item of questions) {
+    const name = 'q_' + item.id;
+    if (item.type === 'text' || item.type === 'textarea') {
+      answers[item.id] = form.querySelector('[name="' + name + '"]').value;
+    } else if (item.type === 'checkbox') {
+      answers[item.id] = [...form.querySelectorAll('input[name="' + name + '"]:checked')].map(i => i.value);
+    } else {
+      const picked = form.querySelector('input[name="' + name + '"]:checked');
+      answers[item.id] = picked ? picked.value : '';
+    }
+  }
+  return answers;
+}
+
+function isEmpty(v) {
+  return Array.isArray(v) ? v.length === 0 : String(v || '').trim() === '';
+}
+
+async function showQuestionnaire(id) {
+  loadingView();
+  const r = await api('getQuestionnaire', { id: id });
+  if (!r.ok) { if (!r.handled) errorView(r.message, () => showHome()); return; }
+  const q = r.questionnaire;
+  const key = draftKey(id);
+
+  let draft = {};
+  try { draft = JSON.parse(load(key) || '{}'); } catch (e) { draft = {}; }
+
+  const msg = el('div');
+  const submitBtn = el('button', { type: 'submit', class: 'btn primary' }, 'שליחה');
+  const form = el('form', { class: 'card', novalidate: true },
+    q.questions.map((item, i) => renderQuestion(item, draft[item.id], i)),
+    msg,
+    el('div', { class: 'form-footer' }, submitBtn,
+      el('span', { class: 'draft-note' }, 'התשובות נשמרות בדפדפן הזה עד השליחה.')));
+
+  // Save a draft in this browser on every change
+  form.addEventListener('input', () => store(key, JSON.stringify(collectAnswers(form, q.questions))));
+  form.addEventListener('change', () => store(key, JSON.stringify(collectAnswers(form, q.questions))));
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.replaceChildren();
+    const answers = collectAnswers(form, q.questions);
+
+    // Check required questions before sending
+    let firstBad = null;
+    for (const item of q.questions) {
+      const box = form.querySelector('[data-qid="' + item.id + '"]');
+      const bad = item.required && isEmpty(answers[item.id]);
+      box.classList.toggle('invalid', bad);
+      box.querySelector('.q-error').textContent = bad ? 'זו שאלת חובה' : '';
+      if (bad && !firstBad) firstBad = box;
+    }
+    if (firstBad) {
+      firstBad.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (!confirm('לאחר השליחה לא ניתן יהיה לשנות את התשובות. לשלוח?')) return;
+
+    await withBusy(submitBtn, async () => {
+      const res = await api('submit', { id: id, answers: answers });
+      if (!res.ok) { if (!res.handled) msg.append(msgBox(res.message)); return; }
+      store(key, null);
+      showHome('השאלון "' + q.title + '" נשלח בהצלחה. תודה!');
+    });
+  });
+
+  render(
+    el('div', { class: 'back' }, linkBtn('→ חזרה לשאלונים', () => showHome())),
+    el('h1', {}, q.title),
+    q.description ? el('p', { class: 'sub' }, q.description) : null,
+    form
+  );
+}
+
+// ===================== Viewing sent answers =====================
+async function showAnswers(id) {
+  loadingView();
+  const r = await api('getAnswers', { id: id });
+  if (!r.ok) { if (!r.handled) errorView(r.message, () => showHome()); return; }
+  const q = r.questionnaire;
+
+  render(
+    el('div', { class: 'back' }, linkBtn('→ חזרה לשאלונים', () => showHome())),
+    el('h1', {}, q.title),
+    el('p', { class: 'sub' }, 'נשלח ב-' + r.submittedAt + '. אלה התשובות ששלחת (לצפייה בלבד).'),
+    el('div', { class: 'card' }, q.questions.map((item, i) => {
+      const v = r.answers[item.id];
+      return el('div', { class: 'answer' },
+        el('div', { class: 'a-label' }, (i + 1) + '. ' + item.label),
+        el('div', { class: 'a-value' }, v === '' || v === undefined ? '—' : v));
+    }))
+  );
+}
+
+// ===================== Start =====================
+if (CFL_API_URL.indexOf('PASTE_') === 0) {
+  render(msgBox('האתר עדיין לא חובר לשרת: יש להדביק את כתובת ה-Web App בקובץ CFL_config.js.'));
+} else if (load(TOKEN_KEY)) {
+  showHome();
+} else {
+  showLogin();
+  // wake the server up while the person signs in, so the first answer comes faster
+  try { fetch(CFL_API_URL, { mode: 'no-cors' }).catch(() => { }); } catch (e) { }
+}
