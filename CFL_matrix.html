@@ -100,7 +100,7 @@ footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--rule);font-si
   <div class="steps" id="steps"></div>
 </header>
 <div id="view"></div>
-<footer>חוזה עם החיים · התשובות נשמרות בדפדפן שבו מילאת את השאלון, ומגיעות אליי רק כשתשלח/י אותן.</footer>
+<footer>חוזה עם החיים · התשובות נשמרות אוטומטית, ואפשר לעצור ולחזור בכל שלב, גם ממכשיר אחר. הן מגיעות אליי רק כשתשלחו אותן.</footer>
 </div>
 <script>
 const L=['א','ב','ג','ד'];
@@ -144,7 +144,7 @@ R[0]=()=>blk('פתיחה','לפני שמתחילים','',`
 <p>במהלך השאלון תברר/י מה חשוב לך כעת, עד כמה כל אפשרות נותנת לכך מענה, ומה עדיין צריך לבדוק. בין הערכת האפשרויות לבין דירוג חשיבות הערכים יש מרווח מכוון. אפשר לבחור מרווח קצר אם מועד ההחלטה קרוב.</p>
 <p>בסוף תתקבל תמונת התאמה, מחירים ושאלות להמשך בירור. היא נועדה לתמוך בשיחה ובהחלטה שלך.</p>
 
-<div class="note"><b>שמירת התשובות:</b> עד השליחה הן נשמרות בדפדפן הזה בלבד. כדי לחזור לשאלון לפני השליחה, פתח/י אותו מאותו מכשיר ומאותו דפדפן. אחרי השליחה הן שמורות באתר, ואפשר להמשיך מכל מכשיר.</div>
+<div class="note"><b>שמירת התשובות:</b> התשובות נשמרות אוטומטית, ואפשר לעצור ולחזור בכל שלב, גם ממכשיר אחר. הן מגיעות אליי רק כשתשלחו אותן.</div>
 ${!storageWorks?'<div class="flag">הדפדפן אינו מאפשר שמירה כרגע. כדאי למלא את השאלון בדפדפן אחר, למשל Chrome.</div>':''}
 ${nav(0,1,'מתחילים')}`);
 
@@ -200,7 +200,7 @@ R[5]=()=>{
  else{
   const ms=remaining(),index=Math.min(ECHO.length-1,Math.floor((Date.now()-S.gapStart)/(24*3600000)));
   body=`<p>המרווח החל ב־${new Date(S.gapStart).toLocaleString('he-IL')}. הציונים נשמרו ומוסתרים.</p>
-  ${ms?`<div class="calm">אפשר לחזור לדירוג חשיבות הערכים בעוד כ־${timeWords(ms)}. אפשר לסגור את החלון ולחזור באותו דפדפן.</div>`:'<div class="calm live">המרווח הסתיים. אפשר להמשיך לדירוג חשיבות הערכים.</div>'}
+  ${ms?`<div class="calm">אפשר לחזור לדירוג חשיבות הערכים בעוד כ־${timeWords(ms)}. אפשר לסגור את החלון ולחזור, גם ממכשיר אחר.</div>`:'<div class="calm live">המרווח הסתיים. אפשר להמשיך לדירוג חשיבות הערכים.</div>'}
   <div class="item"><p class="qt">שאלת ההדהוד של היום: ${ECHO[index]}</p><textarea oninput="S.echo[${index}]=this.value;save()">${esc(S.echo[index]||'')}</textarea></div>
   <p class="sub">אין צורך לענות מיד. אפשר לשוב לשאלה במהלך היום.</p>
   ${ms?'<div class="actions"><button class="ghost" onclick="render()">בדיקת הזמן שנותר</button></div>':nav(1,true,'המשך לדירוג חשיבות הערכים')}`;
@@ -322,7 +322,7 @@ function abBlock(){const pre=S.profile&&(S.profile.core||S.profile.trap||S.profi
 function offerName(){return S.offerOpt!==''&&S.opts[+S.offerOpt]?oname(+S.offerOpt):'ההצעה'}
 R[8]=()=>{const o=O();
  let body=`<p class="qt">האם יש על הפרק הצעה או אפשרות עבודה מוגדרת?</p>${seg2('offer',[['no','עדיין לא. אני בודק/ת כיוונים'],['yes','כן, יש תפקיד או הצעה קונקרטיים']])}`;
- if(S.offer==='no')body+=`<div class="calm">אפשר להמשיך לסיכום עכשיו. כשתגיע הצעה ממשית, פתח/י שוב את אותו הקישור, באותו דפדפן, וחזור/י לשלב הזה. כל מה שמילאת נשמר.</div>`;
+ if(S.offer==='no')body+=`<div class="calm">אפשר להמשיך לסיכום עכשיו. כשתגיע הצעה ממשית, פתח/י שוב את השאלון, וחזור/י לשלב הזה. כל מה שמילאת נשמר.</div>`;
  if(S.offer==='yes'){
   body+=`<p class="qt" style="margin-top:18px">לאיזו אפשרות ההצעה שייכת?</p><select onchange="S.offerOpt=this.value;save()"><option value="">—</option>${o.map(x=>`<option value="${x.i}" ${String(S.offerOpt)===String(x.i)?'selected':''}>${esc(oname(x.i))}</option>`).join('')}</select>
   <div class="bridge"><b>בודקים שלוש שכבות, מהיציבה ביותר לגמישה ביותר.</b><br>1. התרבות הארגונית: כמעט לא משתנה.<br>2. המנהל/ת: קבוע/ה רק חלקית, כי אנשים מתחלפים.<br>3. התפקיד: הכי עשוי להשתנות, ולפעמים אפשר לעצב אותו.<br>ככל שהשכבה יציבה יותר, כך בעיה בה שוקלת יותר.</div>
