@@ -126,7 +126,7 @@ let S={name:'',cats:{},sort:{},q:{}};
 try{const s=JSON.parse(localStorage.getItem(SK)||'null');if(s)S=Object.assign(S,s);}catch(e){}
 const $=id=>document.getElementById(id);
 const esc=t=>String(t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function save(){try{localStorage.setItem(SK,JSON.stringify(S));$('saved').textContent='התשובות נשמרות אוטומטית במכשיר הזה.';}catch(e){}}
+function save(){try{localStorage.setItem(SK,JSON.stringify(S));$('saved').textContent='התשובות נשמרות אוטומטית, ואפשר לעצור ולחזור בכל שלב, גם ממכשיר אחר.';}catch(e){}}
 function items(){const out=[];CATS.forEach(c=>{String(S.cats[c.k]||'').split('\n').map(x=>x.trim()).filter(Boolean).forEach((x,i)=>out.push({id:c.k+':'+x,label:x,cat:c.t}));});return out;}
 function renderCats(){$('cats').innerHTML=CATS.map(c=>`<label class="f" for="c_${c.k}">${c.t}</label><p class="hint">${c.h}</p><textarea id="c_${c.k}" data-k="${c.k}">${esc(S.cats[c.k]||'')}</textarea>`).join('');
  $('cats').querySelectorAll('textarea').forEach(ta=>ta.addEventListener('input',()=>{S.cats[ta.dataset.k]=ta.value;save();renderItems();}));}

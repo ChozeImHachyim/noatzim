@@ -641,7 +641,7 @@ async function showQuestionnaire(id) {
     q.questions.map((item, i) => renderQuestion(item, draft[item.id], i)),
     msg,
     el('div', { class: 'form-footer' }, submitBtn,
-      el('span', { class: 'draft-note' }, 'התשובות נשמרות בדפדפן הזה עד השליחה.')));
+      el('span', { class: 'draft-note' }, 'התשובות נשמרות אוטומטית עד השליחה, גם ממכשיר אחר.')));
 
   // Save a draft in this browser on every change
   form.addEventListener('input', () => store(key, JSON.stringify(collectAnswers(form, q.questions))));

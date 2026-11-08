@@ -138,7 +138,7 @@ let S={name:'',svc:[],cats:{},en:{},sk:{},base:[],baseTxt:'',test:'',testTxt:'',
 try{const s=JSON.parse(localStorage.getItem(SK)||'null');if(s)S=Object.assign(S,s);}catch(e){}
 const $=id=>document.getElementById(id);
 const esc=t=>String(t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function save(){try{localStorage.setItem(SK,JSON.stringify(S));$('saved').textContent='התשובות נשמרות אוטומטית במכשיר הזה.';}catch(e){}}
+function save(){try{localStorage.setItem(SK,JSON.stringify(S));$('saved').textContent='התשובות נשמרות אוטומטית, ואפשר לעצור ולחזור בכל שלב, גם ממכשיר אחר.';}catch(e){}}
 function items(){const o=[];CATS.forEach(c=>String(S.cats[c.k]||'').split('\n').map(x=>x.trim()).filter(Boolean).forEach(x=>o.push({id:c.k+':'+x,label:x,cat:c.t})));return o;}
 function bucket(x){const e=S.en[x.id],s=S.sk[x.id];if(!e||!s)return null;const good=s!=='unsure';
  if(e==='yes')return good?'base':'test';if(e==='no')return good?'can':'later';return good?'mid':'later';}
